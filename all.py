@@ -75,8 +75,13 @@ def srt_summary():
         with open(output_file_path, "w", encoding="utf-8") as f:
             f.write(f"主題：{title}\n摘要：{summary}")
 
-        # 返回結果檔案
-        return send_file(output_file_path, as_attachment=True)
+        # 返回結果檔案，明確指定 MIME 類型
+        return send_file(
+            output_file_path,
+            as_attachment=True,
+            mimetype='text/plain',
+            download_name='srt_summary.txt'
+        )
 
     except ValueError as ve:
         # 捕獲 SRT 解析相關錯誤
