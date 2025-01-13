@@ -19,38 +19,72 @@ OUTPUT_FOLDER = './outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+def generate_summary_and_title(full_text):
+    """
+    模擬生成摘要和標題的函數，請根據實際需求替換這部分邏輯。
+    """
+    title = "模擬主題"
+    summary = "這是一個模擬摘要。"
+    return title, summary
+
 @app.route('/upload/srt-summary', methods=['POST'])
 def srt_summary():
-    if 'file' not in request.files:
-        return jsonify({'error': '未提供檔案'}), 400
+    try:
+        # 檢查是否有上傳的檔案
+        if 'file' not in request.files:
+            return jsonify({'error': '未提供檔案'}), 400
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': '未選擇檔案'}), 400
+        file = request.files['file']
 
-    if not file.filename.endswith('.srt'):
-        return jsonify({'error': '檔案格式錯誤，請上傳 SRT 檔案'}), 400
+        # 檢查檔案名稱是否有效
+        if file.filename == '':
+            return jsonify({'error': '未選擇檔案'}), 400
 
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    file.save(file_path)
+        # 檢查檔案是否為 SRT 格式
+        if not file.filename.endswith('.srt'):
+            return jsonify({'error': '檔案格式錯誤，請上傳 SRT 檔案'}), 400
 
-    # 讀取 SRT 並生成摘要
-    def read_and_clean_srt(file_path):
-        with open(file_path, "r", encoding="utf-8") as file:
-            content = file.read()
-        text_segments = re.findall(r"\\d+\\n\\d{2}:\\d{2}:\\d{2},\\d{3} --> \\d{2}:\\d{2}:\\d{2},\\d{3}\\n(.*?)\\n\\n", content, re.DOTALL)
-        full_text = " ".join(text_segments).replace("\\n", " ")
-        full_text = re.sub(r"[^a-zA-Z0-9\\u4e00-\\u9fff\\s]", "", full_text)
-        return re.sub(r"\\s+", " ", full_text).strip()
+        # 保存上傳的檔案
+        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(file_path)
 
-    full_text = read_and_clean_srt(file_path)
-    title, summary = generate_summary_and_title(full_text)
+        # 解析 SRT 並清理內容
+        def read_and_clean_srt(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+                # 提取字幕文字
+                text_segments = re.findall(
+                    r"\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n(.*?)\n\n",
+                    content, re.DOTALL
+                )
+                # 合併文字並清理格式
+                full_text = " ".join(text_segments).replace("\n", " ")
+                full_text = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff\s]", "", full_text)
+                return re.sub(r"\s+", " ", full_text).strip()
+            except Exception as e:
+                raise ValueError(f"SRT 文件解析失敗: {e}")
 
-    output_file_path = os.path.join(OUTPUT_FOLDER, 'srt_summary.txt')
-    with open(output_file_path, "w", encoding="utf-8") as f:
-        f.write(f"主題：{title}\\n摘要：{summary}")
+        full_text = read_and_clean_srt(file_path)
 
-    return send_file(output_file_path, as_attachment=True)
+        # 生成摘要和標題
+        title, summary = generate_summary_and_title(full_text)
+
+        # 保存結果到輸出檔案
+        output_file_path = os.path.join(OUTPUT_FOLDER, 'srt_summary.txt')
+        with open(output_file_path, "w", encoding="utf-8") as f:
+            f.write(f"主題：{title}\n摘要：{summary}")
+
+        # 返回結果檔案
+        return send_file(output_file_path, as_attachment=True)
+
+    except ValueError as ve:
+        # 捕獲 SRT 解析相關錯誤
+        return jsonify({'error': str(ve)}), 400
+
+    except Exception as e:
+        # 捕獲其他未預期錯誤
+        return jsonify({'error': f"伺服器內部錯誤: {e}"}), 500
 
 @app.route('/upload/audio-transcription', methods=['POST'])
 def audio_transcription():
