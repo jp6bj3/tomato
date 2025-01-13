@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from flask import Flask, request, jsonify, send_file
 from pydub import AudioSegment
 import speech_recognition as sr
