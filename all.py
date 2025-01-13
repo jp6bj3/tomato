@@ -61,7 +61,6 @@ def srt_summary():
             except Exception as e:
                 raise ValueError(f"SRT 文件解析失敗: {e}")
 
-        full_text = read_and_clean_srt(file_path)
 
         # 使用 GPT-3.5 Turbo 生成摘要和主題
         def generate_summary_and_title(text, max_tokens=300):
@@ -83,6 +82,9 @@ def srt_summary():
             summary = summary_match.group(1).strip() if summary_match else "無法生成摘要"
 
             return title, summary
+        
+        full_text = read_and_clean_srt(file_path)
+
 
         # 分段處理
         max_chunk_length = 1500  # 每段最大長度
