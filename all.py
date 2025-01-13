@@ -19,13 +19,6 @@ OUTPUT_FOLDER = './outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-def generate_summary_and_title(full_text):
-    """
-    模擬生成摘要和標題的函數，請根據實際需求替換這部分邏輯。
-    """
-    title = "模擬主題"
-    summary = "這是一個模擬摘要。"
-    return title, summary
 
 @app.route('/upload/srt-summary', methods=['POST'])
 def srt_summary():
@@ -48,7 +41,7 @@ def srt_summary():
         file_path = os.path.join(UPLOAD_FOLDER, file.filename)
         file.save(file_path)
 
-        # 解析 SRT 並清理內容
+        # 讀取並清理 SRT 文件
         def read_and_clean_srt(file_path):
             try:
                 with open(file_path, "r", encoding="utf-8") as file:
@@ -61,21 +54,57 @@ def srt_summary():
                 # 合併文字並清理格式
                 full_text = " ".join(text_segments).replace("\n", " ")
                 full_text = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff\s]", "", full_text)
-                return re.sub(r"\s+", " ", full_text).strip()
+                full_text = re.sub(r"\s+", " ", full_text).strip()
+                return full_text
             except Exception as e:
                 raise ValueError(f"SRT 文件解析失敗: {e}")
 
         full_text = read_and_clean_srt(file_path)
 
-        # 生成摘要和標題
-        title, summary = generate_summary_and_title(full_text)
+        # 使用 GPT-3.5 Turbo 生成摘要和主題
+        def generate_summary_and_title(text, max_tokens=300):
+            """使用 GPT-3.5 Turbo 生成摘要和主題標題。"""
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "你是一個專業的摘要生成助手。"},
+                    {"role": "user", "content": f"請為以下文本生成摘要和主題名稱：\n\n{text}\n\n請以'主題：'開頭提供主題名稱，並以'摘要：'開頭提供摘要。"}
+                ],
+                max_tokens=max_tokens,
+                temperature=0.3
+            )
+            content = response['choices'][0]['message']['content'].strip()
+            title_match = re.search(r"主題：(.*?)\n", content)
+            summary_match = re.search(r"摘要：(.*)", content, re.DOTALL)
 
-        # 保存結果到輸出檔案
+            title = title_match.group(1).strip() if title_match else "未命名主題"
+            summary = summary_match.group(1).strip() if summary_match else "無法生成摘要"
+
+            return title, summary
+
+        # 分段處理
+        max_chunk_length = 1500  # 每段最大長度
+        chunks = [full_text[i:i + max_chunk_length] for i in range(0, len(full_text), max_chunk_length)]
+
+        structured_summaries = []
+        for idx, chunk in enumerate(chunks):
+            try:
+                title, summary = generate_summary_and_title(chunk)
+                structured_summaries.append((title, summary))
+            except Exception as e:
+                return jsonify({'error': f'處理第 {idx + 1} 段時發生錯誤: {str(e)}'}), 500
+
+        # 動態生成結構化摘要
+        final_summary = "### 結構化摘要\n\n"
+        for idx, (title, summary) in enumerate(structured_summaries):
+            final_summary += f"{idx + 1}. **{title}**\n   {summary}\n\n"
+
+        # 儲存摘要到檔案
         output_file_path = os.path.join(OUTPUT_FOLDER, 'srt_summary.txt')
-        with open(output_file_path, "w", encoding="utf-8") as f:
-            f.write(f"主題：{title}\n摘要：{summary}")
+        with open(output_file_path, "w", encoding="utf-8") as summary_file:
+            summary_file.write(final_summary)
 
-        # 返回結果檔案，明確指定 MIME 類型
+        # 返回結果檔案
         return send_file(
             output_file_path,
             as_attachment=True,
