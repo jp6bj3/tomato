@@ -4,6 +4,9 @@ import speech_recognition as sr
 import openai
 import os
 import re
+from flask_cors import CORS
+CORS(app)
+
 
 app = Flask(__name__)
 
