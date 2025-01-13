@@ -101,6 +101,19 @@ def audio_to_srt():
             segment = audio[i:i + segment_length]
             segment_path = os.path.join(UPLOAD_FOLDER, f"segment_{segment_count}.wav")
             segment.export(segment_path, format="wav")
+             # 計算片段的開始和結束時間
+            start_time = i
+            end_time = i + len(segment)
+
+            # 轉換為 SRT 格式時間字符串
+            def ms_to_srt_time(ms):
+                seconds, milliseconds = divmod(ms, 1000)
+                minutes, seconds = divmod(seconds, 60)
+                hours, minutes = divmod(minutes, 60)
+                return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+
+            srt_start_time = ms_to_srt_time(start_time)
+            srt_end_time = ms_to_srt_time(end_time)
 
             with open(segment_path, "rb") as f:
                 response = openai.Audio.transcribe("whisper-1", f)
