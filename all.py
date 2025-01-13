@@ -5,10 +5,10 @@ import openai
 import os
 import re
 from flask_cors import CORS
-CORS(app)
 
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "https://jp6bj3.github.io/SRT/"}})
 
 # 配置 OpenAI API 金鑰
 openai.api_key = os.getenv("OPENAI_API_KEY")
