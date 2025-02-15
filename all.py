@@ -289,40 +289,26 @@ def audio_to_srt():
         if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
             return jsonify({'error': '不支援的音頻格式'}), 400
 
-        # 記錄請求
         logger.info(f"收到來自 {email} 的音頻轉 SRT 請求")
 
-        # 保存上傳的音頻文件
+        # 保存音頻文件
         audio_path = os.path.join(UPLOAD_FOLDER, secure_filename(audio_file.filename))
         audio_file.save(audio_path)
 
         try:
-            segment_length = 120 * 1000  # 2分鐘
-            audio = AudioSegment.from_file(audio_path)
+            with open(audio_path, "rb") as f:
+                response = openai.Audio.transcribe("whisper-1", f, response_format="verbose_json")
 
             output_file_path = os.path.join(OUTPUT_FOLDER, "transcription_results.srt")
             with open(output_file_path, "w", encoding="utf-8") as output_file:
-                for i in range(0, len(audio), segment_length):
-                    segment = audio[i:i + segment_length]
-                    segment_count = i // segment_length + 1
+                for i, segment in enumerate(response['segments'], start=1):
+                    start_time = ms_to_srt_time(int(segment['start'] * 1000))
+                    end_time = ms_to_srt_time(int(segment['end'] * 1000))
+                    text = segment['text'].strip()
                     
-                    segment_path = os.path.join(UPLOAD_FOLDER, f"segment_{segment_count}.wav")
-                    segment.export(segment_path, format="wav")
-
-                    try:
-                        with open(segment_path, "rb") as f:
-                            response = openai.Audio.transcribe("whisper-1", f)
-                            text = response['text']
-
-                        start_time = i
-                        end_time = i + len(segment)
-                        
-                        output_file.write(f"{segment_count}\n")
-                        output_file.write(f"{ms_to_srt_time(start_time)} --> {ms_to_srt_time(end_time)}\n")
-                        output_file.write(f"{text}\n\n")
-
-                    finally:
-                        clean_temp_files(segment_path)
+                    output_file.write(f"{i}\n")
+                    output_file.write(f"{start_time} --> {end_time}\n")
+                    output_file.write(f"{text}\n\n")
 
             # 發送郵件
             email_subject = f"音頻轉 SRT 結果 - {audio_file.filename}"
@@ -346,6 +332,7 @@ def audio_to_srt():
     except Exception as e:
         logger.error(f"音頻轉 SRT 失敗: {str(e)}")
         return jsonify({'error': f"處理失敗: {str(e)}"}), 500
+
 
 def ms_to_srt_time(ms):
     """將毫秒轉換為 SRT 時間格式"""
