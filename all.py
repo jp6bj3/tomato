@@ -9,6 +9,10 @@ import tempfile
 from werkzeug.utils import secure_filename
 import logging
 from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 
 # 設置日誌
 logging.basicConfig(
@@ -20,15 +24,64 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "https://jp6bj3.github.io"}})
 
-# 配置 OpenAI API 金鑰
+# 配置環境變數
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
     raise ValueError("未設置 OPENAI_API_KEY 環境變數")
 
+# 郵件配置
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USERNAME = os.getenv("EMAIL_USERNAME")
+SMTP_PASSWORD = os.getenv("EMAIL_PASSWORD")
+
+if not SMTP_USERNAME or not SMTP_PASSWORD:
+    raise ValueError("未設置郵件相關環境變數")
+
 # 文件路徑設置
-UPLOAD_FOLDER = tempfile.mkdtemp()  # 使用臨時目錄
-OUTPUT_FOLDER = tempfile.mkdtemp()  # 使用臨時目錄
+UPLOAD_FOLDER = tempfile.mkdtemp()
+OUTPUT_FOLDER = tempfile.mkdtemp()
 ALLOWED_AUDIO_EXTENSIONS = {'wav', 'mp3', 'ogg', 'm4a'}
+
+def send_email(recipient_email, subject, body, attachment_path=None):
+    """
+    發送郵件函數
+    :param recipient_email: 收件人郵箱
+    :param subject: 郵件主題
+    :param body: 郵件內容
+    :param attachment_path: 附件路徑（可選）
+    """
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+
+        # 添加郵件正文
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+        # 如果有附件，添加附件
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, 'rb') as f:
+                attachment = MIMEApplication(f.read())
+                attachment.add_header(
+                    'Content-Disposition', 
+                    'attachment', 
+                    filename=os.path.basename(attachment_path)
+                )
+                msg.attach(attachment)
+
+        # 連接到 SMTP 服務器並發送郵件
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        logger.info(f"郵件已發送至 {recipient_email}")
+        return True
+    except Exception as e:
+        logger.error(f"發送郵件失敗: {str(e)}")
+        return False
 
 def allowed_file(filename, allowed_extensions):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
@@ -42,11 +95,16 @@ def clean_temp_files(*file_paths):
         except Exception as e:
             logger.error(f"清理臨時文件失敗 {file_path}: {e}")
 
+#SRT摘要生成 
 @app.route('/upload/srt-summary', methods=['POST'])
 def srt_summary():
     try:
         if 'file' not in request.files:
             return jsonify({'error': '未提供檔案'}), 400
+
+        email = request.form.get('email')
+        if not email:
+            return jsonify({'error': '未提供電子郵件地址'}), 400
 
         file = request.files['file']
         if file.filename == '':
@@ -54,6 +112,9 @@ def srt_summary():
 
         if not file.filename.endswith('.srt'):
             return jsonify({'error': '檔案格式錯誤，請上傳 SRT 檔案'}), 400
+
+        # 記錄請求
+        logger.info(f"收到來自 {email} 的 SRT 摘要請求")
 
         # 使用安全的文件名
         filename = secure_filename(file.filename)
@@ -68,6 +129,15 @@ def srt_summary():
             output_file_path = os.path.join(OUTPUT_FOLDER, 'srt_summary.txt')
             with open(output_file_path, "w", encoding="utf-8") as summary_file:
                 summary_file.write(final_summary)
+
+            # 發送郵件
+            email_subject = f"SRT 檔案摘要結果 - {filename}"
+            email_body = f"您的 SRT 檔案 {filename} 摘要已生成完成，請查看附件。"
+            
+            if send_email(email, email_subject, email_body, output_file_path):
+                logger.info(f"摘要結果已發送至 {email}")
+            else:
+                logger.error(f"發送摘要結果至 {email} 失敗")
 
             return send_file(
                 output_file_path,
@@ -134,15 +204,23 @@ def generate_summary_and_title(text, max_tokens=300):
     
     return title, summary
 
+#音訊轉文字
 @app.route('/upload/audio-transcription', methods=['POST'])
 def audio_transcription():
     try:
         if 'audioFile' not in request.files:
             return jsonify({'error': '未提供音頻文件'}), 400
 
+        email = request.form.get('email')
+        if not email:
+            return jsonify({'error': '未提供電子郵件地址'}), 400
+
         audio_file = request.files['audioFile']
         if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
             return jsonify({'error': '不支援的音頻格式'}), 400
+
+        # 記錄請求
+        logger.info(f"收到來自 {email} 的音頻轉文字請求")
 
         segment_length = int(request.form.get('segmentLength', 30)) * 1000
 
@@ -151,7 +229,6 @@ def audio_transcription():
         audio_file.save(audio_path)
 
         try:
-            # 初始化語音識別器
             recognizer = sr.Recognizer()
             audio = AudioSegment.from_file(audio_path)
 
@@ -174,6 +251,15 @@ def audio_transcription():
                         logger.error(f"Google Speech Recognition 服務錯誤: {e}")
                         output_file.write(f"片段 {i // segment_length + 1}: [服務錯誤]\n")
 
+            # 發送郵件
+            email_subject = f"音頻轉文字結果 - {audio_file.filename}"
+            email_body = f"您的音頻檔案 {audio_file.filename} 轉文字結果已生成完成，請查看附件。"
+            
+            if send_email(email, email_subject, email_body, output_file_path):
+                logger.info(f"轉文字結果已發送至 {email}")
+            else:
+                logger.error(f"發送轉文字結果至 {email} 失敗")
+
             return send_file(
                 output_file_path,
                 as_attachment=True,
@@ -188,15 +274,23 @@ def audio_transcription():
         logger.error(f"音頻轉文字失敗: {str(e)}")
         return jsonify({'error': f"處理失敗: {str(e)}"}), 500
 
+#音訊轉SRT
 @app.route('/upload/audio-to-srt', methods=['POST'])
 def audio_to_srt():
     try:
         if 'audioFile' not in request.files:
             return jsonify({'error': '未提供音頻文件'}), 400
 
+        email = request.form.get('email')
+        if not email:
+            return jsonify({'error': '未提供電子郵件地址'}), 400
+
         audio_file = request.files['audioFile']
         if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
             return jsonify({'error': '不支援的音頻格式'}), 400
+
+        # 記錄請求
+        logger.info(f"收到來自 {email} 的音頻轉 SRT 請求")
 
         # 保存上傳的音頻文件
         audio_path = os.path.join(UPLOAD_FOLDER, secure_filename(audio_file.filename))
@@ -212,27 +306,32 @@ def audio_to_srt():
                     segment = audio[i:i + segment_length]
                     segment_count = i // segment_length + 1
                     
-                    # 保存臨時音頻段
                     segment_path = os.path.join(UPLOAD_FOLDER, f"segment_{segment_count}.wav")
                     segment.export(segment_path, format="wav")
 
                     try:
-                        # 使用 Whisper 進行轉錄
                         with open(segment_path, "rb") as f:
                             response = openai.Audio.transcribe("whisper-1", f)
                             text = response['text']
 
-                        # 計算時間戳
                         start_time = i
                         end_time = i + len(segment)
                         
-                        # 寫入 SRT 格式
                         output_file.write(f"{segment_count}\n")
                         output_file.write(f"{ms_to_srt_time(start_time)} --> {ms_to_srt_time(end_time)}\n")
                         output_file.write(f"{text}\n\n")
 
                     finally:
                         clean_temp_files(segment_path)
+
+            # 發送郵件
+            email_subject = f"音頻轉 SRT 結果 - {audio_file.filename}"
+            email_body = f"您的音頻檔案 {audio_file.filename} 轉 SRT 結果已生成完成，請查看附件。"
+            
+            if send_email(email, email_subject, email_body, output_file_path):
+                logger.info(f"SRT 結果已發送至 {email}")
+            else:
+                logger.error(f"發送 SRT 結果至 {email} 失敗")
 
             return send_file(
                 output_file_path,
