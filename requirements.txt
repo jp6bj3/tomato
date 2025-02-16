@@ -1,6 +1,17 @@
-Flask==2.3.2
-pydub==0.25.1
-SpeechRecognition==3.10.0
-openai==0.27.8
-python-dotenv==1.0.0
-flask-cors==3.0.10
+# Web 框架相關
+flask==2.0.1            # Python Web 框架，用於創建 Web 應用程序
+flask-cors==3.0.10      # 處理跨域請求的 Flask 擴展，允許前端頁面訪問 API
+Werkzeug==2.2.2         # Flask 的依賴庫，處理 WSGI、路由和檔案上傳等功能
+
+# 音頻處理相關
+pydub==0.25.1           # 音頻檔案處理庫，用於分割和轉換音頻文件
+SpeechRecognition==3.8.1 # 語音識別庫，用於將語音轉換為文字
+
+# AI 和 API 相關
+openai==0.27.0          # OpenAI API 客戶端，用於調用 GPT 和 Whisper API
+
+# 數據庫相關
+psycopg2-binary==2.9.9  # PostgreSQL 數據庫驅動，用紀錄使用者日記，可以變更為自己的資料庫，Free版本90天過期
+
+# 環境配置相關
+python-dotenv==0.19.0   # 環境變數管理工具，用於加載 .env 文件中的配置
