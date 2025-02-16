@@ -121,39 +121,50 @@ class DatabaseManager:
             logger.error(f"數據庫初始化失敗: {str(e)}")
             raise
 
-    def log_usage(self, email, service_type, status="success", file_name=None):
-        """記錄使用情況"""
-        try:
-            current_time = datetime.now()
-            
-            with self.get_connection() as conn:
-                with conn.cursor() as cur:
-                    # 檢查用戶是否存在
-                    cur.execute("""
-                        INSERT INTO user_records (email, first_use, last_use, total_usage)
-                        VALUES (%s, %s, %s, 1)
-                        ON CONFLICT (email) DO UPDATE SET
-                            last_use = %s,
-                            total_usage = user_records.total_usage + 1,
-                            {}_count = user_records.{}_count + 1
-                        WHERE user_records.email = %s
-                    """.format(
-                        service_type.replace('-', '_'),
-                        service_type.replace('-', '_')
-                    ), (email, current_time, current_time, current_time, email))
+def log_usage(self, email, service_type, status="success", file_name=None):
+    """記錄使用情況"""
+    try:
+        current_time = datetime.now()
+        
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                # 根據服務類型選擇要更新的列
+                if service_type == "srt-summary":
+                    update_column = "srt_summary_count"
+                elif service_type == "transcription":
+                    update_column = "transcription_count"
+                elif service_type == "srt-transcription":
+                    update_column = "srt_transcription_count"
+                else:
+                    raise ValueError(f"未知的服務類型: {service_type}")
 
-                    # 記錄使用日誌
-                    cur.execute("""
-                        INSERT INTO usage_logs 
-                        (email, service_type, usage_time, status, file_name)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (email, service_type, current_time, status, file_name))
+                # 構建更新語句
+                sql = """
+                    INSERT INTO user_records 
+                    (email, first_use, last_use, {}, total_usage)
+                    VALUES (%s, %s, %s, 1, 1)
+                    ON CONFLICT (email) DO UPDATE SET
+                        last_use = %s,
+                        total_usage = user_records.total_usage + 1,
+                        {} = user_records.{} + 1
+                    WHERE user_records.email = %s
+                """.format(update_column, update_column, update_column)
 
-                conn.commit()
-            logger.info(f"記錄使用情況成功: {email} - {service_type}")
-        except Exception as e:
-            logger.error(f"記錄使用情況失敗: {str(e)}")
-            raise
+                # 執行更新
+                cur.execute(sql, (email, current_time, current_time, current_time, email))
+
+                # 記錄使用日誌
+                cur.execute("""
+                    INSERT INTO usage_logs 
+                    (email, service_type, usage_time, status, file_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (email, service_type, current_time, status, file_name))
+                
+            conn.commit()
+        logger.info(f"記錄使用情況成功: {email} - {service_type}")
+    except Exception as e:
+        logger.error(f"記錄使用情況失敗: {str(e)}")
+        raise
 
     def get_statistics(self):
         """獲取使用統計"""
