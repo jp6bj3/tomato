@@ -4,14 +4,11 @@ import speech_recognition as sr
 import openai
 import os
 import re
-import json
-import psycopg2
-from psycopg2.extras import Json
 from flask_cors import CORS
 import tempfile
 from werkzeug.utils import secure_filename
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -41,162 +38,29 @@ SMTP_PASSWORD = os.getenv("EMAIL_PASSWORD")
 if not SMTP_USERNAME or not SMTP_PASSWORD:
     raise ValueError("未設置郵件相關環境變數")
 
-# 數據庫配置
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("未設置 DATABASE_URL 環境變數")
-
 # 文件路徑設置
 UPLOAD_FOLDER = tempfile.mkdtemp()
 OUTPUT_FOLDER = tempfile.mkdtemp()
 ALLOWED_AUDIO_EXTENSIONS = {'wav', 'mp3', 'ogg', 'm4a'}
 
-class DatabaseManager:
-    def __init__(self):
-        self.db_url = DATABASE_URL
-        self.init_db()
-
-    def get_connection(self):
-        """獲取數據庫連接"""
-        return psycopg2.connect(self.db_url)
-
-    def init_db(self):
-        """初始化數據庫表"""
-        try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cur:
-                    # 創建使用者記錄表
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS user_records (
-                            id SERIAL PRIMARY KEY,
-                            email TEXT UNIQUE NOT NULL,
-                            first_use TIMESTAMP NOT NULL,
-                            last_use TIMESTAMP NOT NULL,
-                            srt_summary_count INTEGER DEFAULT 0,
-                            transcription_count INTEGER DEFAULT 0,
-                            srt_transcription_count INTEGER DEFAULT 0,
-                            total_usage INTEGER DEFAULT 0
-                        )
-                    """)
-                    
-                    # 創建使用記錄表
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS usage_logs (
-                            id SERIAL PRIMARY KEY,
-                            email TEXT NOT NULL,
-                            service_type TEXT NOT NULL,
-                            usage_time TIMESTAMP NOT NULL,
-                            status TEXT NOT NULL,
-                            file_name TEXT,
-                            FOREIGN KEY (email) REFERENCES user_records(email)
-                        )
-                    """)
-                conn.commit()
-            logger.info("數據庫表初始化成功")
-        except Exception as e:
-            logger.error(f"數據庫初始化失敗: {str(e)}")
-            raise
-
-    def log_usage(self, email, service_type, status="success", file_name=None):
-        """記錄使用情況"""
-        try:
-            current_time = datetime.now()
-            
-            with self.get_connection() as conn:
-                with conn.cursor() as cur:
-                    # 檢查用戶是否存在
-                    cur.execute("""
-                        INSERT INTO user_records (email, first_use, last_use, total_usage)
-                        VALUES (%s, %s, %s, 1)
-                        ON CONFLICT (email) DO UPDATE SET
-                            last_use = %s,
-                            total_usage = user_records.total_usage + 1,
-                            {}_count = user_records.{}_count + 1
-                        WHERE user_records.email = %s
-                    """.format(
-                        service_type.replace('-', '_'),
-                        service_type.replace('-', '_')
-                    ), (email, current_time, current_time, current_time, email))
-
-                    # 記錄使用日誌
-                    cur.execute("""
-                        INSERT INTO usage_logs 
-                        (email, service_type, usage_time, status, file_name)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (email, service_type, current_time, status, file_name))
-
-                conn.commit()
-            logger.info(f"記錄使用情況成功: {email} - {service_type}")
-        except Exception as e:
-            logger.error(f"記錄使用情況失敗: {str(e)}")
-            raise
-
-    def get_statistics(self):
-        """獲取使用統計"""
-        try:
-            with self.get_connection() as conn:
-                with conn.cursor() as cur:
-                    # 獲取基本統計資料
-                    cur.execute("""
-                        SELECT 
-                            COUNT(DISTINCT email) as total_users,
-                            SUM(total_usage) as total_usage,
-                            COUNT(DISTINCT CASE 
-                                WHEN last_use > NOW() - INTERVAL '30 days' 
-                                THEN email 
-                            END) as active_users
-                        FROM user_records
-                    """)
-                    stats = cur.fetchone()
-
-                    # 獲取用戶詳細記錄
-                    cur.execute("""
-                        SELECT 
-                            email,
-                            first_use,
-                            last_use,
-                            srt_summary_count,
-                            transcription_count,
-                            srt_transcription_count,
-                            total_usage
-                        FROM user_records
-                        ORDER BY last_use DESC
-                    """)
-                    users = []
-                    for record in cur.fetchall():
-                        users.append({
-                            "email": record[0],
-                            "firstUse": record[1].isoformat(),
-                            "lastUse": record[2].isoformat(),
-                            "srtSummaryCount": record[3],
-                            "transcriptionCount": record[4],
-                            "srtTranscriptionCount": record[5],
-                            "totalUsage": record[6]
-                        })
-
-                    return {
-                        "totalUsers": stats[0],
-                        "totalUsage": stats[1] or 0,
-                        "activeUsers": stats[2] or 0,
-                        "users": users
-                    }
-        except Exception as e:
-            logger.error(f"獲取統計資料失敗: {str(e)}")
-            raise
-
-# 初始化數據庫管理器
-db_manager = DatabaseManager()
-
 def send_email(recipient_email, subject, body, attachment_path=None):
-    """發送郵件函數"""
+    """
+    發送郵件函數
+    :param recipient_email: 收件人郵箱
+    :param subject: 郵件主題
+    :param body: 郵件內容
+    :param attachment_path: 附件路徑（可選）
+    """
     try:
         msg = MIMEMultipart()
         msg['From'] = SMTP_USERNAME
         msg['To'] = recipient_email
         msg['Subject'] = subject
 
+        # 添加郵件正文
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
+        # 如果有附件，添加附件
         if attachment_path and os.path.exists(attachment_path):
             with open(attachment_path, 'rb') as f:
                 attachment = MIMEApplication(f.read())
@@ -207,6 +71,7 @@ def send_email(recipient_email, subject, body, attachment_path=None):
                 )
                 msg.attach(attachment)
 
+        # 連接到 SMTP 服務器並發送郵件
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -230,15 +95,7 @@ def clean_temp_files(*file_paths):
         except Exception as e:
             logger.error(f"清理臨時文件失敗 {file_path}: {e}")
 
-@app.route('/user-records', methods=['GET'])
-def get_user_records():
-    """獲取用戶記錄的API端點"""
-    try:
-        return jsonify(db_manager.get_statistics())
-    except Exception as e:
-        logger.error(f"獲取用戶記錄失敗: {str(e)}")
-        return jsonify({'error': '獲取記錄失敗'}), 500
-
+#SRT摘要生成 
 @app.route('/upload/srt-summary', methods=['POST'])
 def srt_summary():
     try:
@@ -265,9 +122,6 @@ def srt_summary():
         file.save(file_path)
 
         try:
-            # 記錄使用者活動
-            db_manager.log_usage(email, "srt-summary", file_name=filename)
-
             full_text = read_and_clean_srt(file_path)
             structured_summaries = process_text_chunks(full_text)
             final_summary = generate_final_summary(structured_summaries)
@@ -291,165 +145,12 @@ def srt_summary():
                 mimetype='text/plain',
                 download_name='srt_summary.txt'
             )
-        except Exception as e:
-            # 記錄失敗狀態
-            db_manager.log_usage(email, "srt-summary", "failed", filename)
-            raise
         finally:
             clean_temp_files(file_path)
 
     except Exception as e:
         logger.error(f"SRT 摘要生成失敗: {str(e)}")
         return jsonify({'error': f"處理失敗: {str(e)}"}), 500
-
-@app.route('/upload/audio-transcription', methods=['POST'])
-def audio_transcription():
-    try:
-        if 'audioFile' not in request.files:
-            return jsonify({'error': '未提供音頻文件'}), 400
-
-        email = request.form.get('email')
-        if not email:
-            return jsonify({'error': '未提供電子郵件地址'}), 400
-
-        audio_file = request.files['audioFile']
-        if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
-            return jsonify({'error': '不支援的音頻格式'}), 400
-
-        # 記錄請求
-        logger.info(f"收到來自 {email} 的音頻轉文字請求")
-
-        # 記錄使用者活動
-        filename = secure_filename(audio_file.filename)
-        db_manager.log_usage(email, "transcription", file_name=filename)
-
-        segment_length = int(request.form.get('segmentLength', 30)) * 1000
-
-        # 保存上傳的音頻文件
-        audio_path = os.path.join(UPLOAD_FOLDER, filename)
-        audio_file.save(audio_path)
-
-        try:
-            recognizer = sr.Recognizer()
-            audio = AudioSegment.from_file(audio_path)
-
-            output_file_path = os.path.join(OUTPUT_FOLDER, 'transcription_results.txt')
-            temp_segment_path = os.path.join(UPLOAD_FOLDER, 'temp_segment.wav')
-
-            with open(output_file_path, "w", encoding="utf-8") as output_file:
-                for i in range(0, len(audio), segment_length):
-                    segment = audio[i:i + segment_length]
-                    segment.export(temp_segment_path, format="wav")
-
-                    try:
-                        with sr.AudioFile(temp_segment_path) as source:
-                            audio_data = recognizer.record(source)
-                            text = recognizer.recognize_google(audio_data, language="zh-TW")
-                            output_file.write(f"片段 {i // segment_length + 1}: {text}\n")
-                    except sr.UnknownValueError:
-                        output_file.write(f"片段 {i // segment_length + 1}: [無法識別的音頻]\n")
-                    except sr.RequestError as e:
-                        logger.error(f"Google Speech Recognition 服務錯誤: {e}")
-                        output_file.write(f"片段 {i // segment_length + 1}: [服務錯誤]\n")
-
-            # 發送郵件
-            email_subject = f"音頻轉文字結果 - {filename}"
-            email_body = f"您的音頻檔案 {filename} 轉文字結果已生成完成，請查看附件。"
-            
-            if send_email(email, email_subject, email_body, output_file_path):
-                logger.info(f"轉文字結果已發送至 {email}")
-            else:
-                logger.error(f"發送轉文字結果至 {email} 失敗")
-
-            return send_file(
-                output_file_path,
-                as_attachment=True,
-                mimetype='text/plain',
-                download_name='transcription_results.txt'
-            )
-
-        except Exception as e:
-            # 記錄失敗狀態
-            db_manager.log_usage(email, "transcription", "failed", filename)
-            raise
-        finally:
-            clean_temp_files(audio_path, temp_segment_path)
-
-    except Exception as e:
-        logger.error(f"音頻轉文字失敗: {str(e)}")
-        return jsonify({'error': f"處理失敗: {str(e)}"}), 500
-
-@app.route('/upload/audio-to-srt', methods=['POST'])
-def audio_to_srt():
-    try:
-        if 'audioFile' not in request.files:
-            return jsonify({'error': '未提供音頻文件'}), 400
-
-        email = request.form.get('email')
-        if not email:
-            return jsonify({'error': '未提供電子郵件地址'}), 400
-
-        audio_file = request.files['audioFile']
-        if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
-            return jsonify({'error': '不支援的音頻格式'}), 400
-
-        # 記錄請求和使用者活動
-        filename = secure_filename(audio_file.filename)
-        logger.info(f"收到來自 {email} 的音頻轉 SRT 請求")
-        db_manager.log_usage(email, "srt-transcription", file_name=filename)
-
-        # 保存音頻文件
-        audio_path = os.path.join(UPLOAD_FOLDER, filename)
-        audio_file.save(audio_path)
-
-        try:
-            with open(audio_path, "rb") as f:
-                response = openai.Audio.transcribe("whisper-1", f, response_format="verbose_json")
-
-            output_file_path = os.path.join(OUTPUT_FOLDER, "transcription_results.srt")
-            with open(output_file_path, "w", encoding="utf-8") as output_file:
-                for i, segment in enumerate(response['segments'], start=1):
-                    start_time = ms_to_srt_time(int(segment['start'] * 1000))
-                    end_time = ms_to_srt_time(int(segment['end'] * 1000))
-                    text = segment['text'].strip()
-                    
-                    output_file.write(f"{i}\n")
-                    output_file.write(f"{start_time} --> {end_time}\n")
-                    output_file.write(f"{text}\n\n")
-
-            # 發送郵件
-            email_subject = f"音頻轉 SRT 結果 - {filename}"
-            email_body = f"您的音頻檔案 {filename} 轉 SRT 結果已生成完成，請查看附件。"
-            
-            if send_email(email, email_subject, email_body, output_file_path):
-                logger.info(f"SRT 結果已發送至 {email}")
-            else:
-                logger.error(f"發送 SRT 結果至 {email} 失敗")
-
-            return send_file(
-                output_file_path,
-                as_attachment=True,
-                mimetype='text/plain',
-                download_name='transcription_results.srt'
-            )
-
-        except Exception as e:
-            # 記錄失敗狀態
-            db_manager.log_usage(email, "srt-transcription", "failed", filename)
-            raise
-        finally:
-            clean_temp_files(audio_path)
-
-    except Exception as e:
-        logger.error(f"音頻轉 SRT 失敗: {str(e)}")
-        return jsonify({'error': f"處理失敗: {str(e)}"}), 500
-
-def ms_to_srt_time(ms):
-    """將毫秒轉換為 SRT 時間格式"""
-    seconds, milliseconds = divmod(ms, 1000)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
 def read_and_clean_srt(file_path):
     """讀取並清理 SRT 文件內容"""
@@ -502,6 +203,143 @@ def generate_summary_and_title(text, max_tokens=300):
     summary = summary_match.group(1).strip() if summary_match else "無法生成摘要"
     
     return title, summary
+
+#音訊轉文字
+@app.route('/upload/audio-transcription', methods=['POST'])
+def audio_transcription():
+    try:
+        if 'audioFile' not in request.files:
+            return jsonify({'error': '未提供音頻文件'}), 400
+
+        email = request.form.get('email')
+        if not email:
+            return jsonify({'error': '未提供電子郵件地址'}), 400
+
+        audio_file = request.files['audioFile']
+        if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
+            return jsonify({'error': '不支援的音頻格式'}), 400
+
+        # 記錄請求
+        logger.info(f"收到來自 {email} 的音頻轉文字請求")
+
+        segment_length = int(request.form.get('segmentLength', 30)) * 1000
+
+        # 保存上傳的音頻文件
+        audio_path = os.path.join(UPLOAD_FOLDER, secure_filename(audio_file.filename))
+        audio_file.save(audio_path)
+
+        try:
+            recognizer = sr.Recognizer()
+            audio = AudioSegment.from_file(audio_path)
+
+            output_file_path = os.path.join(OUTPUT_FOLDER, 'transcription_results.txt')
+            temp_segment_path = os.path.join(UPLOAD_FOLDER, 'temp_segment.wav')
+
+            with open(output_file_path, "w", encoding="utf-8") as output_file:
+                for i in range(0, len(audio), segment_length):
+                    segment = audio[i:i + segment_length]
+                    segment.export(temp_segment_path, format="wav")
+
+                    try:
+                        with sr.AudioFile(temp_segment_path) as source:
+                            audio_data = recognizer.record(source)
+                            text = recognizer.recognize_google(audio_data, language="zh-TW")
+                            output_file.write(f"片段 {i // segment_length + 1}: {text}\n")
+                    except sr.UnknownValueError:
+                        output_file.write(f"片段 {i // segment_length + 1}: [無法識別的音頻]\n")
+                    except sr.RequestError as e:
+                        logger.error(f"Google Speech Recognition 服務錯誤: {e}")
+                        output_file.write(f"片段 {i // segment_length + 1}: [服務錯誤]\n")
+
+            # 發送郵件
+            email_subject = f"音頻轉文字結果 - {audio_file.filename}"
+            email_body = f"您的音頻檔案 {audio_file.filename} 轉文字結果已生成完成，請查看附件。"
+            
+            if send_email(email, email_subject, email_body, output_file_path):
+                logger.info(f"轉文字結果已發送至 {email}")
+            else:
+                logger.error(f"發送轉文字結果至 {email} 失敗")
+
+            return send_file(
+                output_file_path,
+                as_attachment=True,
+                mimetype='text/plain',
+                download_name='transcription_results.txt'
+            )
+
+        finally:
+            clean_temp_files(audio_path, temp_segment_path)
+
+    except Exception as e:
+        logger.error(f"音頻轉文字失敗: {str(e)}")
+        return jsonify({'error': f"處理失敗: {str(e)}"}), 500
+
+#音訊轉SRT
+@app.route('/upload/audio-to-srt', methods=['POST'])
+def audio_to_srt():
+    try:
+        if 'audioFile' not in request.files:
+            return jsonify({'error': '未提供音頻文件'}), 400
+
+        email = request.form.get('email')
+        if not email:
+            return jsonify({'error': '未提供電子郵件地址'}), 400
+
+        audio_file = request.files['audioFile']
+        if not allowed_file(audio_file.filename, ALLOWED_AUDIO_EXTENSIONS):
+            return jsonify({'error': '不支援的音頻格式'}), 400
+
+        logger.info(f"收到來自 {email} 的音頻轉 SRT 請求")
+
+        # 保存音頻文件
+        audio_path = os.path.join(UPLOAD_FOLDER, secure_filename(audio_file.filename))
+        audio_file.save(audio_path)
+
+        try:
+            with open(audio_path, "rb") as f:
+                response = openai.Audio.transcribe("whisper-1", f, response_format="verbose_json")
+
+            output_file_path = os.path.join(OUTPUT_FOLDER, "transcription_results.srt")
+            with open(output_file_path, "w", encoding="utf-8") as output_file:
+                for i, segment in enumerate(response['segments'], start=1):
+                    start_time = ms_to_srt_time(int(segment['start'] * 1000))
+                    end_time = ms_to_srt_time(int(segment['end'] * 1000))
+                    text = segment['text'].strip()
+                    
+                    output_file.write(f"{i}\n")
+                    output_file.write(f"{start_time} --> {end_time}\n")
+                    output_file.write(f"{text}\n\n")
+
+            # 發送郵件
+            email_subject = f"音頻轉 SRT 結果 - {audio_file.filename}"
+            email_body = f"您的音頻檔案 {audio_file.filename} 轉 SRT 結果已生成完成，請查看附件。"
+            
+            if send_email(email, email_subject, email_body, output_file_path):
+                logger.info(f"SRT 結果已發送至 {email}")
+            else:
+                logger.error(f"發送 SRT 結果至 {email} 失敗")
+
+            return send_file(
+                output_file_path,
+                as_attachment=True,
+                mimetype='text/plain',
+                download_name='transcription_results.srt'
+            )
+
+        finally:
+            clean_temp_files(audio_path)
+
+    except Exception as e:
+        logger.error(f"音頻轉 SRT 失敗: {str(e)}")
+        return jsonify({'error': f"處理失敗: {str(e)}"}), 500
+
+
+def ms_to_srt_time(ms):
+    """將毫秒轉換為 SRT 時間格式"""
+    seconds, milliseconds = divmod(ms, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
 def generate_final_summary(structured_summaries):
     """生成最終的結構化摘要"""
