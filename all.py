@@ -17,7 +17,17 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
-# 在 all.py 中添加根路由處理器
+# 設置日誌
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "https://jp6bj3.github.io"}})
+
+# 根路由處理
 @app.route('/', methods=['GET', 'HEAD'])
 def root():
     """處理根路徑請求"""
@@ -32,7 +42,7 @@ def root():
         }
     })
 
-# 添加健康檢查端點
+# 健康檢查端點
 @app.route('/health', methods=['GET'])
 def health_check():
     """健康檢查端點"""
@@ -40,16 +50,6 @@ def health_check():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat()
     })
-
-# 設置日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "https://jp6bj3.github.io"}})
 
 # 配置環境變數
 openai.api_key = os.getenv("OPENAI_API_KEY")
