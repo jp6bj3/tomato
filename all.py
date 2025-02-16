@@ -17,6 +17,30 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
+# 在 all.py 中添加根路由處理器
+@app.route('/', methods=['GET', 'HEAD'])
+def root():
+    """處理根路徑請求"""
+    return jsonify({
+        'status': 'running',
+        'message': 'Audio Processing API is running',
+        'endpoints': {
+            'srt_summary': '/upload/srt-summary',
+            'audio_transcription': '/upload/audio-transcription',
+            'audio_to_srt': '/upload/audio-to-srt',
+            'user_records': '/user-records'
+        }
+    })
+
+# 添加健康檢查端點
+@app.route('/health', methods=['GET'])
+def health_check():
+    """健康檢查端點"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
 # 設置日誌
 logging.basicConfig(
     level=logging.INFO,
